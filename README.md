@@ -28,7 +28,7 @@ workspace with saved layouts.
 | ![Terminal Light theme with the latest congressional trades feed](docs/img/light-congress.png) | ![Nord theme, sidebar on the right, dragging a Watchlist tab onto the chart pane's dock compass](docs/img/docking-nord.png) |
 | **Terminal Light** — the latest STOCK Act filings with party, chamber, owner and amount filters | **Docking** (Nord theme, sidebar on the right) — drag a tab onto the compass to tab or split |
 | ![Live theme editor: Monokai applied to the chart while its colours are shown in Settings](docs/img/theme-editor.png) | ![Theme gallery in Settings › Appearance](docs/img/theme-gallery.png) ![Congress marker hover card with disclosure lag](docs/img/hover-card.png) |
-| **Theme editor** — edit any colour, font or density live; save, duplicate, import/export TOML or JSON | **Theme gallery** and the **marker hover card** (politician, amount, traded/filed, disclosure lag) |
+| **Theme editor** — edit any colour, font or density live; save, duplicate, import/export TOML | **Theme gallery** and the **marker hover card** (politician, amount, traded/filed, disclosure lag) |
 | ![Portfolio summary: total value, unrealised P&L, cash, buying power, allocation bar, top holdings and accounts beside an AAPL chart](docs/img/portfolio.png) | ![Positions table with quantity, live last price, average cost, value and unrealised P&L](docs/img/positions.png) |
 | **Portfolio** — `PORT`: value, unrealised P&L, cash and buying power, allocation, top holdings, accounts (simulated sample shown) | **Positions** — `POS`: live terminal quotes (cyan) reprice holdings; click a row to chart it |
 
@@ -127,7 +127,7 @@ gets the native title bar with traffic lights, window vibrancy behind the sideba
     row in a linked watchlist or world-markets pane loads it into the group.
   - **Saved layouts**: save, name, rename, duplicate, delete and switch (`LAYOUT <name>`, the
     sidebar list, ⌥1…⌥9); the active layout autosaves and is restored on launch. Each layout is a
-    JSON file in `~/Library/Application Support/terminal/layouts` (`$XDG_CONFIG_HOME/terminal/layouts` on Linux)
+    TOML file in `~/Library/Application Support/terminal/layouts` (`$XDG_CONFIG_HOME/terminal/layouts` on Linux)
     and can be imported or exported (`LAYOUT EXPORT`/`IMPORT`, or Settings › Layouts). Per-pane
     settings (chart type, indicators, drawings, filters, depth, link, tab title) and, optionally,
     the theme (`LAYOUT THEME ON`) save with the layout.
@@ -138,7 +138,7 @@ gets the native title bar with traffic lights, window vibrancy behind the sideba
   Settings › Appearance, the View menu, `THEME <name>` (prefix match), `THEME NEXT|PREV|LIST` or
   ⌘⌥T; `THEME SYSTEM` follows the OS with a chosen dark and light theme. Settings › Themes is a
   live editor: editing a built-in makes a copy (built-ins stay read-only); duplicate, rename,
-  delete, import or export as TOML or JSON. Custom themes are TOML files in the `themes` folder
+  delete, import or export as TOML. Custom themes are TOML files in the `themes` folder
   next to `layouts`; a partial file inherits everything else from Terminal Dark or Light.
 - **Native, compact UI** — a macOS unified compact toolbar with the traffic lights inset, a
   translucent source-list sidebar with window vibrancy (`NSVisualEffectView` via `objc2`, in
@@ -176,7 +176,7 @@ gets the native title bar with traffic lights, window vibrancy behind the sideba
   recent picks come first. ↑↓ select, ↵ open, Esc close.
 - **Hotkeys and preferences** — every hotkey is rebindable from a native shortcut table in
   Settings › Hotkeys and Help (click a binding, press the new keys); defaults for new charts and
-  order books; everything persists in `prefs.json`.
+  order books; everything persists in `prefs.toml`.
 
 ## Running
 
@@ -185,6 +185,9 @@ cargo run --release                  # Yahoo data, congress ingest in the backgr
 TR_PROVIDER=sample cargo run --release   # offline
 APCA_API_KEY_ID=… APCA_API_SECRET_KEY=… cargo run --release   # Alpaca
 ```
+
+Desktop preferences and workspace settings are written to `prefs.toml` and
+`settings.toml`. Older JSON configuration files are ignored.
 
 On Linux, preferences, settings, layouts and themes live in `$XDG_CONFIG_HOME/terminal`
 (`~/.config/terminal` by default); persistent data and credentials live in
@@ -288,7 +291,7 @@ explicit confirmation.
 **Where credentials live.** On macOS the client ID, consumer key, user ID and user secret are
 stored together in the **Keychain** (generic password, service `terminal`, account
 `snaptrade`); credentials saved under the old service, `terminal-rs`, move there the first time
-the app reads them. Elsewhere they go in `<data dir>/secrets/snaptrade.json` with owner-only permissions
+the app reads them. Elsewhere they go in `<data dir>/secrets/snaptrade.toml` with owner-only permissions
 (0600 in a 0700 directory). They are never written to the repository, layouts, prefs or logs;
 request errors are scrubbed of the URL (which carries the user secret), and the settings screen
 masks secrets. **Forget Credentials** removes them. `SNAPTRADE_CLIENT_ID`,
@@ -306,7 +309,7 @@ are repriced with the terminal's live quotes where a market key exists.
 
 ## Trading (opt-in)
 
-The **demo account** needs no setup: it is a local paper-trading account (`demo-account.json` in
+The **demo account** needs no setup: it is a local paper-trading account (`demo-account.toml` in
 the app data folder) with no commissions, no short selling and Day orders expiring at the 4 p.m.
 New York close. Switch to your brokerage accounts with the toolbar badge, `MODE LIVE`, or
 Settings › Trading (`DEMO` switches back).
@@ -388,9 +391,9 @@ Settings › Hotkeys. On Linux and Windows ⌘ is Ctrl and ⌥ is Alt.
 ```
 app/            eframe shell: command line, docked panes, chart widget, panels
   dock.rs       docking tree (splits + tab groups): insert/move/remove, layout, resize, presets
-  layouts.rs    saved layout documents (JSON) and the layouts folder store
-  prefs.rs      appearance, keymap and panel defaults (prefs.json)
-  themes.rs     theme model, built-in themes, TOML/JSON theme files and the themes folder
+  layouts.rs    saved layout documents (TOML) and the layouts folder store
+  prefs.rs      appearance, keymap and panel defaults (prefs.toml)
+  themes.rs     theme model, built-in themes, TOML theme files and the themes folder
   app/          workspace (drag and drop, pop-out windows, link groups), panels, settings, chrome
   worker.rs     tokio runtime: all network, SQLite, pyramid and indicator work (UI never blocks)
   storage.rs    saved files: the data folder on desktop, localStorage in the browser
@@ -475,11 +478,11 @@ cargo bench -p tr-core && cargo bench -p tr-chart
   flat zero-volume bars) at its default, minimum and maximum parameters, checking alignment,
   declared ranges and no panics; layouts saved in the old indicator format still load.
 - Layouts: the dock tree (insert, split, tab, move, remove/normalise, resize clamping, presets,
-  JSON round trip and repair of hand-edited files), layout documents (every panel kind and its
-  settings, links, popped windows, older formats), the store (save, list, rename, duplicate,
-  delete, import, export, safe file names), migration from pre-docking settings, prefs and
+  TOML round trip and repair of hand-edited files), layout documents (every panel kind and its
+  settings, links, popped windows, partial documents), the store (save, list, rename, duplicate,
+  delete, import, export, safe file names), prefs and
   keymap parsing/rebinding.
-- Themes: every built-in round-trips through TOML and JSON, partial theme files inherit from the
+- Themes: every built-in round-trips through TOML, partial theme files inherit from the
   dark/light base, the themes folder store (save, rename, delete, name collisions), copy-on-write
   names and migration of older appearance preferences.
 - Brokerage: request signatures match values computed independently with Python's `hmac` over the

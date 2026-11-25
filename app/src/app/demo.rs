@@ -4,7 +4,7 @@
 //!
 //! The demo account is selected on first launch and stays selected until the user switches
 //! to live accounts, which takes a confirmation and is remembered in the preferences. Every
-//! demo change is saved at once to `demo-account.json` in the app data folder.
+//! demo change is saved at once to `demo-account.toml` in the app data folder.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -38,7 +38,7 @@ pub struct DemoState {
 }
 
 pub fn demo_path() -> PathBuf {
-    data_dir().join("demo-account.json")
+    data_dir().join("demo-account.toml")
 }
 
 /// Terminal market key for a demo symbol (`AAPL` → `AAPL US Equity`).
@@ -52,14 +52,14 @@ impl DemoState {
     pub fn load(path: PathBuf) -> (Self, Option<String>) {
         let now = chrono::Utc::now();
         let saved = match crate::storage::read(&path) {
-            Ok(bytes) => DemoBook::from_json(&bytes),
+            Ok(bytes) => DemoBook::from_toml(&bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DemoBook::new(now)),
             Err(e) => Err(anyhow::Error::new(e).context("reading the demo account")),
         };
         let (book, note) = match saved {
             Ok(b) => (b, None),
             Err(e) => {
-                let aside = path.with_extension(format!("damaged-{}.json", now.format("%Y%m%d%H%M%S")));
+                let aside = path.with_extension(format!("damaged-{}.toml", now.format("%Y%m%d%H%M%S")));
                 let moved = crate::storage::rename(&path, &aside).is_ok();
                 tracing::warn!("demo account: {e:#}");
                 let note = if moved {
@@ -100,7 +100,7 @@ impl DemoState {
         self.last_save_try = Some(Instant::now());
         let saved = self
             .book
-            .to_json()
+            .to_toml()
             .and_then(|json| crate::storage::write_atomic(&self.path, &json).context("saving the demo account"));
         match saved {
             Ok(()) => {

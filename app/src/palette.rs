@@ -180,10 +180,16 @@ pub struct Palette {
     path: Option<PathBuf>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct PaletteHistory {
+    recents: Vec<Item>,
+}
+
 impl Palette {
     /// Load recent picks from `path` (missing or unreadable files start empty).
     pub fn load(path: &Path) -> Self {
-        let recents = crate::storage::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let recents =
+            crate::storage::read_config::<PaletteHistory>(path).map(|history| history.recents).unwrap_or_default();
         Self { recents, path: Some(path.to_path_buf()), ..Default::default() }
     }
 
@@ -229,8 +235,7 @@ impl Palette {
         self.recents.insert(0, item.clone());
         self.recents.truncate(MAX_RECENTS);
         if let Some(path) = &self.path
-            && let Ok(json) = serde_json::to_vec_pretty(&self.recents)
-            && let Err(e) = crate::storage::write_atomic(path, &json)
+            && let Err(e) = crate::storage::write_config(path, &PaletteHistory { recents: self.recents.clone() })
         {
             tracing::warn!("saving palette recents: {e}");
         }
@@ -429,7 +434,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("tr-palette-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("palette.json");
+        let path = dir.join("palette.toml");
         let mut p = Palette::load(&path);
         assert!(p.recents.is_empty());
         let items = catalogue();

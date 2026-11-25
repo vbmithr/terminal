@@ -1,5 +1,5 @@
 //! Named, saved workspace layouts: the dock tree, each pane's kind and settings, link
-//! groups and popped-out windows. Stored one JSON file per layout in
+//! groups and popped-out windows. Stored one TOML file per layout in
 //! `<config dir>/layouts/` (`~/Library/Application Support/terminal/layouts` on macOS),
 //! so they can be shared, hand-edited, imported and exported.
 
@@ -73,7 +73,9 @@ pub enum PaneSettings {
         magnet: bool,
     },
     /// Congress feed with its filter (`None` = unfiltered).
-    Feed(Option<FeedSettings>),
+    Feed {
+        filter: Option<FeedSettings>,
+    },
     Ticker(String),
     Profile(String),
     Politicians,
@@ -84,7 +86,9 @@ pub enum PaneSettings {
     Curve,
     Search(String),
     /// Headlines for a security (`None` = general market news).
-    News(Option<String>),
+    News {
+        symbol: Option<String>,
+    },
     OrderBook {
         symbol: String,
         depth: usize,
@@ -146,7 +150,6 @@ impl From<FeedSettings> for FeedFilter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedPane {
     pub id: PaneId,
-    #[serde(flatten)]
     pub settings: PaneSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
@@ -219,8 +222,8 @@ impl LayoutDoc {
         self.version = FORMAT_VERSION;
     }
 
-    pub fn from_json(json: &[u8]) -> Result<LayoutDoc> {
-        let mut doc: LayoutDoc = serde_json::from_slice(json).context("parsing layout JSON")?;
+    pub fn from_toml(bytes: &[u8]) -> Result<LayoutDoc> {
+        let mut doc: LayoutDoc = toml::from_str(std::str::from_utf8(bytes)?).context("parsing layout TOML")?;
         if doc.version > FORMAT_VERSION {
             bail!("layout format v{} is newer than this build supports (v{FORMAT_VERSION})", doc.version);
         }
@@ -228,15 +231,15 @@ impl LayoutDoc {
         Ok(doc)
     }
 
-    pub fn to_json(&self) -> Vec<u8> {
-        serde_json::to_vec_pretty(self).expect("layout serializes")
+    pub fn to_toml(&self) -> Result<String> {
+        Ok(toml::to_string_pretty(self)?)
     }
 
     /// The default workspace: chart, Congress feed, world markets and watchlist.
     pub fn default_workspace(name: &str, defaults: &crate::prefs::PanelDefaults) -> LayoutDoc {
         let panes = vec![
             chart_settings("AAPL US Equity", defaults),
-            PaneSettings::Feed(None),
+            PaneSettings::Feed { filter: None },
             PaneSettings::Wei,
             PaneSettings::Watchlist,
         ];
@@ -299,7 +302,7 @@ impl Store {
     }
 
     pub fn path(&self, name: &str) -> PathBuf {
-        self.dir.join(format!("{}.json", Self::file_stem(name)))
+        self.dir.join(format!("{}.toml", Self::file_stem(name)))
     }
 
     /// Saved layout names, sorted case-insensitively. Names come from the documents, so a
@@ -307,16 +310,15 @@ impl Store {
     pub fn list(&self) -> Vec<String> {
         let mut names: Vec<String> = storage::list(&self.dir)
             .into_iter()
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
             .filter_map(|p| {
                 let bytes = storage::read(&p).ok()?;
-                let doc: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-                Some(
-                    doc["name"]
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| p.file_stem().unwrap_or_default().to_string_lossy().into_owned()),
-                )
+                let doc = LayoutDoc::from_toml(&bytes).ok()?;
+                Some(if doc.name.is_empty() {
+                    p.file_stem().unwrap_or_default().to_string_lossy().into_owned()
+                } else {
+                    doc.name
+                })
             })
             .collect();
         names.sort_by_key(|n| n.to_lowercase());
@@ -336,17 +338,17 @@ impl Store {
             return Some(p);
         }
         storage::list(&self.dir).into_iter().find(|p| {
-            p.extension().is_some_and(|x| x == "json")
+            p.extension().is_some_and(|x| x == "toml")
                 && storage::read(p)
                     .ok()
-                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                    .is_some_and(|v| v["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+                    .and_then(|b| LayoutDoc::from_toml(&b).ok())
+                    .is_some_and(|v| v.name.eq_ignore_ascii_case(name))
         })
     }
 
     pub fn load(&self, name: &str) -> Result<LayoutDoc> {
         let path = self.find_file(name).with_context(|| format!("no saved layout named {name:?}"))?;
-        let mut doc = LayoutDoc::from_json(&storage::read(&path)?).with_context(|| format!("{}", path.display()))?;
+        let mut doc = LayoutDoc::from_toml(&storage::read(&path)?).with_context(|| format!("{}", path.display()))?;
         if doc.name.trim().is_empty() {
             doc.name = name.to_string();
         }
@@ -355,7 +357,8 @@ impl Store {
 
     pub fn save(&self, doc: &LayoutDoc) -> Result<PathBuf> {
         let path = self.path(&doc.name);
-        storage::write_atomic(&path, &doc.to_json()).with_context(|| format!("writing {}", path.display()))?;
+        storage::write_atomic(&path, doc.to_toml()?.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
         Ok(path)
     }
 
@@ -403,13 +406,14 @@ impl Store {
     /// Write a layout to an arbitrary path (a download in the browser). Returns where it went.
     pub fn export(&self, name: &str, to: &Path) -> Result<String> {
         let doc = self.load(name)?;
-        storage::export(to, &doc.to_json()).with_context(|| format!("writing {}", to.display()))
+        let to = to.with_extension("toml");
+        storage::export(&to, doc.to_toml()?.as_bytes()).with_context(|| format!("writing {}", to.display()))
     }
 
     /// Copy a layout file into the store (renaming on conflict). Returns its name.
     pub fn import(&self, from: &Path) -> Result<String> {
         let mut doc =
-            LayoutDoc::from_json(&storage::import(from).with_context(|| format!("reading {}", from.display()))?)?;
+            LayoutDoc::from_toml(&storage::import(from).with_context(|| format!("reading {}", from.display()))?)?;
         if doc.name.trim().is_empty() {
             doc.name = from.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         }
@@ -442,7 +446,7 @@ mod tests {
         });
         doc.panes.push(SavedPane {
             id: 6,
-            settings: PaneSettings::News(Some("BTCUSD Curncy".into())),
+            settings: PaneSettings::News { symbol: Some("BTCUSD Curncy".into()) },
             link: Some(Link::Blue),
             title: None,
             window: Some(WindowGeometry { x: 40.0, y: 60.0, w: 640.0, h: 480.0 }),
@@ -464,50 +468,45 @@ mod tests {
     }
 
     #[test]
-    fn json_round_trip_preserves_everything() {
+    fn toml_round_trip_preserves_everything() {
         let doc = rich_doc();
-        let json = doc.to_json();
-        let text = String::from_utf8(json.clone()).unwrap();
-        assert!(text.contains("\"OrderBook\"") && text.contains("\"link\": \"Blue\""));
-        let back = LayoutDoc::from_json(&json).unwrap();
+        let text = doc.to_toml().unwrap();
+        let back = LayoutDoc::from_toml(text.as_bytes()).unwrap();
         assert_eq!(back, doc);
-        // Popped-out panes stay out of the dock.
         assert!(!back.dock.contains(6));
         assert!(back.dock.contains(5));
     }
 
     #[test]
-    fn repair_fixes_inconsistent_documents() {
-        let raw = r#"{"name":"Broken","dock":{"type":"tabs","panes":[1,9]},
-            "panes":[{"id":1,"Wei":null},{"id":1,"Curve":null},{"id":2,"News":null},{"id":3,"Settings":null,
-            "window":{"x":0,"y":0,"w":300,"h":200}}],"focus":42}"#;
-        let doc = LayoutDoc::from_json(raw.as_bytes()).unwrap();
-        assert_eq!(doc.panes.len(), 3, "duplicate id dropped");
-        assert_eq!(doc.dock.panes(), vec![1, 2], "unknown pane removed, unplaced pane docked");
+    fn hand_edited_toml_is_repaired_and_newer_versions_are_rejected() {
+        let text = br#"
+name = "Broken"
+focus = 42
+[dock]
+type = "tabs"
+panes = [1, 9]
+[[panes]]
+id = 1
+settings = "Wei"
+[[panes]]
+id = 1
+settings = "Curve"
+[[panes]]
+id = 2
+settings.News = {}
+[[panes]]
+id = 3
+settings = "Settings"
+window = { x = 0.0, y = 0.0, w = 300.0, h = 200.0 }
+"#;
+        let doc = LayoutDoc::from_toml(text).unwrap();
+        assert_eq!(doc.panes.len(), 3);
+        assert_eq!(doc.dock.panes(), vec![1, 2]);
         assert_eq!(doc.focus, None);
-        assert_eq!(doc.version, FORMAT_VERSION);
-        let empty = LayoutDoc::from_json(br#"{"name":"E","dock":{"type":"tabs","panes":[]},"panes":[]}"#).unwrap();
-        assert_eq!(empty.dock.panes(), vec![1]);
-        assert!(
-            LayoutDoc::from_json(br#"{"version":99,"name":"F","dock":{"type":"tabs","panes":[]},"panes":[]}"#).is_err()
-        );
-        assert!(LayoutDoc::from_json(b"not json").is_err());
-    }
-
-    #[test]
-    fn older_pane_settings_still_load() {
-        // Chart settings written before volume/congress/magnet were persisted.
-        let raw = r#"{"name":"Old","dock":{"type":"tabs","panes":[1]},"panes":[{"id":1,"Chart":{"symbol":"AAPL",
-            "tf":"D1","chart_type":"Line","log":true,"indicators":[],"drawings":[],"compare":null}},
-            {"id":2,"Feed":null}]}"#;
-        let doc = LayoutDoc::from_json(raw.as_bytes()).unwrap();
-        match &doc.panes[0].settings {
-            PaneSettings::Chart { show_volume, show_congress, magnet, log, .. } => {
-                assert!(*show_volume && *show_congress && !*magnet && *log)
-            }
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(doc.panes[1].settings, PaneSettings::Feed(None));
+        let empty = "name = \"Empty\"\npanes = []\n[dock]\ntype = \"tabs\"\npanes = []\n";
+        assert_eq!(LayoutDoc::from_toml(empty.as_bytes()).unwrap().dock.panes(), vec![1]);
+        assert!(LayoutDoc::from_toml(format!("version = 99\n{empty}").as_bytes()).is_err());
+        assert!(LayoutDoc::from_toml(br#"{"name":"JSON"}"#).is_err());
     }
 
     #[test]
@@ -527,11 +526,11 @@ mod tests {
 
         let renamed = store.rename("Trading copy", "Crypto/Desk").unwrap();
         assert_eq!(renamed.name, "Crypto/Desk");
-        assert!(store.path("Crypto/Desk").ends_with("Crypto_Desk.json"));
+        assert!(store.path("Crypto/Desk").ends_with("Crypto_Desk.toml"));
         assert!(store.rename("alpha", "Crypto/Desk").is_err());
         assert!(store.rename("alpha", "  ").is_err());
 
-        let out = store.dir.join("export/trading.json");
+        let out = store.dir.join("export/trading.toml");
         store.export("Trading", &out).unwrap();
         let imported = store.import(&out).unwrap();
         assert_eq!(imported, "Trading 2");
@@ -539,8 +538,8 @@ mod tests {
 
         // A file dropped in by hand under any name is listed by its document name.
         std::fs::write(
-            store.dir.join("whatever.json"),
-            LayoutDoc::preset("Hand Made", Layout::One, vec![PaneSettings::Help]).to_json(),
+            store.dir.join("whatever.toml"),
+            LayoutDoc::preset("Hand Made", Layout::One, vec![PaneSettings::Help]).to_toml().unwrap(),
         )
         .unwrap();
         assert!(store.list().contains(&"Hand Made".to_string()));

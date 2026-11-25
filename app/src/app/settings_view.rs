@@ -278,8 +278,7 @@ impl TerminalApp {
                     }
                 }
             });
-            for (label, key) in [("Use", "use"), ("Duplicate", "dup"), ("Export TOML", "toml"), ("Export JSON", "json")]
-            {
+            for (label, key) in [("Use", "use"), ("Duplicate", "dup"), ("Export TOML", "toml")] {
                 if ui.button(label).clicked() {
                     op = Some(key);
                 }
@@ -448,7 +447,7 @@ impl TerminalApp {
         });
         ui.label(
             RichText::new(
-                "Themes are TOML (or JSON) files; a file may set only the fields it changes. \
+                "Themes are TOML files; a file may set only the fields it changes. \
                  Export writes to the path above, or ~/Downloads.",
             )
             .font(ui_font(11.5))
@@ -509,7 +508,7 @@ impl TerminalApp {
                 self.editing_theme = n.clone();
                 self.status = format!("Duplicated {name:?} as {n:?}");
             }
-            "toml" | "json" => {
+            "toml" => {
                 let given = self.theme_io.trim();
                 let path = if given.is_empty() {
                     let dl = expand("~/Downloads");
@@ -630,7 +629,7 @@ impl TerminalApp {
     fn layouts_tab(&mut self, ui: &mut Ui, cmds: &mut Vec<SettingsCmd>) {
         section(ui, "Saved layouts");
         ui.label(
-            RichText::new(format!("Stored as JSON in {}", self.store.dir.display())).font(ui_font(11.5)).color(muted()),
+            RichText::new(format!("Stored as TOML in {}", self.store.dir.display())).font(ui_font(11.5)).color(muted()),
         );
         let names = self.layout_names.clone();
         egui::Grid::new("layouts").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
@@ -687,7 +686,7 @@ impl TerminalApp {
         section(ui, "Import / export");
         ui.horizontal(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut self.io_path).hint_text("~/Downloads/layout.json").desired_width(320.0),
+                egui::TextEdit::singleline(&mut self.io_path).hint_text("~/Downloads/layout.toml").desired_width(320.0),
             );
             if ui.button("Import").clicked() && !self.io_path.trim().is_empty() {
                 let p = self.io_path.trim();

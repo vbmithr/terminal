@@ -381,7 +381,7 @@ impl TerminalApp {
                     (&["LAYOUT SAVE", "LAYOUT SAVE Desk"], "Save (as)"),
                     (&["LAYOUT NEW Rates"], "Start a new layout"),
                     (&["LAYOUT RENAME", "LAYOUT DUP", "LAYOUT DEL"], "Rename, duplicate, delete"),
-                    (&["LAYOUT EXPORT", "LAYOUT IMPORT ~/x.json"], "Share layouts as JSON"),
+                    (&["LAYOUT EXPORT", "LAYOUT IMPORT ~/x.toml"], "Share layouts as TOML"),
                     (&["LAYOUT 1", "2", "2H", "3", "4", "6"], "Preset grids (panels are kept as tabs)"),
                 ],
             );

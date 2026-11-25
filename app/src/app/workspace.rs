@@ -847,13 +847,13 @@ impl TerminalApp {
         self.preset = None;
         self.drag = None;
         self.renaming_tab = None;
-        self.last_saved = self.current_doc().to_json();
+        self.last_saved = Some(self.current_doc());
     }
 
     pub(super) fn save_layout(&mut self) {
         let doc = self.current_doc();
         match self.store.save(&doc) {
-            Ok(_) => self.last_saved = doc.to_json(),
+            Ok(_) => self.last_saved = Some(doc),
             Err(e) => self.status = format!("Could not save layout: {e:#}"),
         }
         self.refresh_layout_names();
@@ -1000,7 +1000,7 @@ impl TerminalApp {
                 let path = path.unwrap_or_else(|| {
                     let downloads = expand_home("~/Downloads");
                     let dir = if downloads.is_dir() { downloads } else { self.store.dir.join("exports") };
-                    dir.join(format!("{}.json", crate::layouts::Store::file_stem(&name)))
+                    dir.join(format!("{}.toml", crate::layouts::Store::file_stem(&name)))
                 });
                 let to = self.store.export(&name, &path)?;
                 Ok(format!("Exported {name:?} to {to}"))

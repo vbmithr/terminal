@@ -294,7 +294,7 @@ impl PaneKind {
                 magnet: c.magnet,
             },
             PaneKind::Feed { filter } => {
-                PaneSettings::Feed((*filter != FeedFilter::default()).then(|| (*filter).into()))
+                PaneSettings::Feed { filter: (*filter != FeedFilter::default()).then(|| (*filter).into()) }
             }
             PaneKind::Ticker { symbol, .. } => PaneSettings::Ticker(symbol.clone()),
             PaneKind::Profile { query, .. } => PaneSettings::Profile(query.clone()),
@@ -305,7 +305,7 @@ impl PaneKind {
             PaneKind::Wei => PaneSettings::Wei,
             PaneKind::Curve => PaneSettings::Curve,
             PaneKind::Search { query } => PaneSettings::Search(query.clone()),
-            PaneKind::News(n) => PaneSettings::News(n.symbol.clone()),
+            PaneKind::News(n) => PaneSettings::News { symbol: n.symbol.clone() },
             PaneKind::OrderBook(b) => {
                 PaneSettings::OrderBook { symbol: b.symbol.clone(), depth: b.depth, group: b.group }
             }
@@ -348,7 +348,7 @@ impl PaneKind {
                 c.magnet = magnet;
                 PaneKind::Chart(Box::new(c))
             }
-            PaneSettings::Feed(f) => PaneKind::Feed { filter: f.map(Into::into).unwrap_or_default() },
+            PaneSettings::Feed { filter: f } => PaneKind::Feed { filter: f.map(Into::into).unwrap_or_default() },
             PaneSettings::Ticker(s) => PaneKind::Ticker { symbol: s, trades: Vec::new(), loading: true },
             PaneSettings::Profile(q) => PaneKind::Profile { query: q, data: None, loading: true },
             PaneSettings::Politicians => PaneKind::Politicians,
@@ -358,7 +358,7 @@ impl PaneKind {
             PaneSettings::Wei => PaneKind::Wei,
             PaneSettings::Curve => PaneKind::Curve,
             PaneSettings::Search(q) => PaneKind::Search { query: q },
-            PaneSettings::News(s) => PaneKind::News(Box::new(NewsPane::new(s))),
+            PaneSettings::News { symbol: s } => PaneKind::News(Box::new(NewsPane::new(s))),
             PaneSettings::OrderBook { symbol, depth, group } => {
                 PaneKind::OrderBook(Box::new(BookPane::new(&symbol, depth, group)))
             }
@@ -389,7 +389,7 @@ impl Pane {
     }
 }
 
-/// App-wide state persisted in `settings.json` (layouts live in their own files).
+/// App-wide state persisted in `settings.toml` (layouts live in their own files).
 #[derive(Serialize, Deserialize)]
 struct Settings {
     #[serde(default)]
@@ -399,11 +399,6 @@ struct Settings {
     /// Name of the layout to restore on launch.
     #[serde(default)]
     active_layout: Option<String>,
-    // Pre-docking settings files stored a preset and a pane list here.
-    #[serde(default, skip_serializing)]
-    layout: Option<Layout>,
-    #[serde(default, skip_serializing)]
-    panes: Option<Vec<serde_json::Value>>,
 }
 
 fn default_true() -> bool {
@@ -423,28 +418,6 @@ const DEFAULT_WATCHLIST: [&str; 11] = [
     "CL1 Comdty",
     "GC1 Comdty",
 ];
-
-/// Convert a pre-docking settings file into a layout document.
-fn migrate_legacy(s: &Settings, defaults: &prefs::PanelDefaults) -> Option<LayoutDoc> {
-    let panes: Vec<PaneSettings> = s
-        .panes
-        .as_ref()?
-        .iter()
-        .filter_map(|v| {
-            // Unit variants were stored as bare strings ("Feed"); wrap them as {"Feed": null}.
-            let v = match v {
-                serde_json::Value::String(name) => serde_json::json!({ name.as_str(): null }),
-                other => other.clone(),
-            };
-            serde_json::from_value(v).ok()
-        })
-        .collect();
-    if panes.is_empty() {
-        return None;
-    }
-    let _ = defaults;
-    Some(LayoutDoc::preset("Default", s.layout.unwrap_or(Layout::Grid2x2), panes))
-}
 
 /// How long an alert toast stays up.
 const TOAST_SECS: u64 = 10;
@@ -476,7 +449,7 @@ pub struct TerminalApp {
     store: Store,
     layout_name: String,
     layout_names: Vec<String>,
-    last_saved: Vec<u8>,
+    last_saved: Option<LayoutDoc>,
     /// Layout being renamed in the sidebar: old name and edit buffer.
     renaming_layout: Option<(String, String)>,
 
@@ -598,11 +571,11 @@ fn keys_from_words(words: &[String]) -> Vec<String> {
 }
 
 fn settings_path() -> std::path::PathBuf {
-    config_dir().join("settings.json")
+    config_dir().join("settings.toml")
 }
 
 fn prefs_path() -> std::path::PathBuf {
-    config_dir().join("prefs.json")
+    config_dir().join("prefs.toml")
 }
 
 impl TerminalApp {
@@ -630,8 +603,7 @@ impl TerminalApp {
                 _ => crate::themes::find(&themes, &v).map_or(prefs.appearance.theme.clone(), |t| t.name.clone()),
             };
         }
-        let settings: Option<Settings> =
-            crate::storage::read(&settings_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let settings = crate::storage::read_config::<Settings>(&settings_path());
         let broker = broker::BrokerState::load(provider.eq_ignore_ascii_case("sample"));
         let (demo, demo_note) = demo::DemoState::load(demo::demo_path());
         let mut app = Self {
@@ -653,7 +625,7 @@ impl TerminalApp {
             store: Store::new(config_dir().join("layouts")),
             layout_name: "Default".into(),
             layout_names: Vec::new(),
-            last_saved: Vec::new(),
+            last_saved: None,
             renaming_layout: None,
             editing_theme: prefs.appearance.theme.clone(),
             themes,
@@ -710,7 +682,7 @@ impl TerminalApp {
             vibrancy: false,
             chrome: None,
             last_chrome_poll: None,
-            palette: crate::palette::Palette::load(&data_dir().join("palette.json")),
+            palette: crate::palette::Palette::load(&data_dir().join("palette.toml")),
         };
         let mut doc = None;
         if let Some(s) = &settings {
@@ -725,9 +697,6 @@ impl TerminalApp {
                     Ok(d) => doc = Some(d),
                     Err(e) => tracing::warn!("restoring layout {name:?}: {e:#}"),
                 }
-            }
-            if doc.is_none() {
-                doc = migrate_legacy(s, &app.prefs.panels);
             }
         }
         let doc = doc
@@ -768,12 +737,8 @@ impl TerminalApp {
             watchlist: self.watchlist.clone(),
             sidebar: self.sidebar_open,
             active_layout: Some(self.layout_name.clone()),
-            layout: None,
-            panes: None,
         };
-        if let Ok(json) = serde_json::to_vec_pretty(&s)
-            && let Err(e) = crate::storage::write_atomic(&settings_path(), &json)
-        {
+        if let Err(e) = crate::storage::write_config(&settings_path(), &s) {
             tracing::warn!("saving settings: {e}");
         }
     }
@@ -1530,8 +1495,8 @@ impl TerminalApp {
     /// Save the active layout (only when it changed) and app settings.
     fn autosave(&mut self) {
         self.save_dirty_themes(true);
-        let json = self.current_doc().to_json();
-        if json != self.last_saved {
+        let doc = self.current_doc();
+        if self.last_saved.as_ref() != Some(&doc) {
             self.save_layout();
         }
         self.save_settings();
@@ -1737,24 +1702,6 @@ mod tests {
         assert!(pane(ago(11_000), true).due(), "a lost answer doesn't stop the pane");
     }
 
-    #[test]
-    fn legacy_settings_migrate_to_a_layout() {
-        let old = r#"{"layout":"MainRight2","watchlist":["AAPL","BTCUSD Curncy"],"sidebar":false,
-            "panes":[{"Chart":{"symbol":"NVDA","tf":"D1","chart_type":"Candles","log":false,"indicators":[],
-            "drawings":[],"compare":null}},"Feed","Wei"]}"#;
-        let s: Settings = serde_json::from_str(old).unwrap();
-        assert!(!s.sidebar);
-        let doc = migrate_legacy(&s, &prefs::PanelDefaults::default()).unwrap();
-        assert_eq!(doc.panes.len(), 3);
-        assert_eq!(doc.dock.visible(), vec![1, 2, 3]);
-        assert!(matches!(&doc.panes[0].settings, PaneSettings::Chart { symbol, .. } if symbol == "NVDA"));
-        assert_eq!(doc.panes[1].settings, PaneSettings::Feed(None));
-        // New-format files carry no legacy fields and are not migrated.
-        let new: Settings = serde_json::from_str(r#"{"watchlist":[],"active_layout":"Desk"}"#).unwrap();
-        assert!(migrate_legacy(&new, &prefs::PanelDefaults::default()).is_none());
-        assert_eq!(new.active_layout.as_deref(), Some("Desk"));
-    }
-
     /// When the server can't quote a perp, the watchlist drops its old price instead of showing
     /// it as current. Listed instruments keep theirs, as before.
     #[test]
@@ -1779,9 +1726,11 @@ mod tests {
         let d = prefs::PanelDefaults::default();
         for s in [
             crate::layouts::chart_settings("BTCUSD Curncy", &d),
-            PaneSettings::Feed(Some(crate::layouts::FeedSettings { buys: Some(true), ..Default::default() })),
-            PaneSettings::News(Some("AAPL US Equity".into())),
-            PaneSettings::News(None),
+            PaneSettings::Feed {
+                filter: Some(crate::layouts::FeedSettings { buys: Some(true), ..Default::default() }),
+            },
+            PaneSettings::News { symbol: Some("AAPL US Equity".into()) },
+            PaneSettings::News { symbol: None },
             PaneSettings::OrderBook { symbol: "ETHUSD Curncy".into(), depth: 50, group: 1.0 },
             PaneSettings::Search("gold".into()),
             PaneSettings::Settings,

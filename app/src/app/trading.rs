@@ -234,7 +234,7 @@ pub struct CapsCache {
 }
 
 fn caps_path() -> std::path::PathBuf {
-    data_dir().join("trading-access.json")
+    data_dir().join("trading-access.toml")
 }
 
 #[derive(Default)]
@@ -344,8 +344,7 @@ impl TerminalApp {
         if std::mem::replace(&mut self.trading.caps_loaded, true) {
             return;
         }
-        let cached: Option<CapsCache> =
-            crate::storage::read(&caps_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let cached: Option<CapsCache> = crate::storage::read_config(&caps_path());
         if self.trading.caps.is_none() {
             self.trading.caps = cached;
         }
@@ -392,9 +391,7 @@ impl TerminalApp {
         match result {
             Ok(caps) => {
                 let cache = CapsCache { fetched: Some(chrono::Utc::now()), caps };
-                if let Ok(json) = serde_json::to_vec_pretty(&cache)
-                    && let Err(e) = crate::storage::write_atomic(&caps_path(), &json)
-                {
+                if let Err(e) = crate::storage::write_config(&caps_path(), &cache) {
                     tracing::warn!("saving trading access: {e}");
                 }
                 t.caps = Some(cache);

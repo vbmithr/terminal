@@ -1,6 +1,6 @@
 //! Where preferences, settings, layouts, themes, palette history and the demo account are
 //! kept: files under the data directory on the desktop, `localStorage` entries keyed by path
-//! in the browser. Every saved document is UTF-8 text (JSON or TOML).
+//! in the browser. Every saved document is TOML text.
 //!
 //! [`export`], [`import`] and [`reveal`] are for files the user names: on the desktop they are
 //! ordinary files and folders; in the browser an export is a download, and there is no import
@@ -10,6 +10,27 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub use imp::*;
+
+/// Read a TOML document. Missing files use the caller's defaults.
+pub fn read_config<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    let result = read(path).and_then(|bytes| {
+        let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+        toml::from_str(text).map_err(io::Error::other)
+    });
+    match result {
+        Ok(value) => Some(value),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            tracing::warn!("reading {}: {error}", path.display());
+            None
+        }
+    }
+}
+
+pub fn write_config(path: &Path, value: &impl serde::Serialize) -> io::Result<()> {
+    let text = toml::to_string_pretty(value).map_err(io::Error::other)?;
+    write_atomic(path, text.as_bytes())
+}
 
 /// Saved documents keyed by path, as the browser keeps them.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -113,7 +134,7 @@ mod imp {
                     copy_missing(&entry.path(), &to.join(entry.file_name()), created)?;
                 }
             } else if from.is_file() {
-                if to.exists() {
+                if from.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || to.exists() {
                     return Ok(());
                 }
                 use std::sync::atomic::{AtomicU64, Ordering};
@@ -142,7 +163,7 @@ mod imp {
         let mut created = Vec::new();
         let result = (|| -> io::Result<()> {
             std::fs::create_dir_all(new)?;
-            for name in ["prefs.json", "settings.json", "layouts", "themes"] {
+            for name in ["prefs.toml", "settings.toml", "layouts", "themes"] {
                 let from = old.join(name);
                 if from.exists() {
                     copy_missing(&from, &new.join(name), &mut created)?;
@@ -434,20 +455,20 @@ mod tests {
         let root = scratch("xdg-config");
         let old = root.join("data");
         let new = root.join("config");
-        write_atomic(&old.join("prefs.json"), b"old preferences").unwrap();
-        write_atomic(&old.join("settings.json"), b"old settings").unwrap();
-        write_atomic(&old.join("layouts/Desk.json"), b"layout").unwrap();
+        write_atomic(&old.join("prefs.toml"), b"old preferences").unwrap();
+        write_atomic(&old.join("settings.toml"), b"old settings").unwrap();
+        write_atomic(&old.join("layouts/Desk.toml"), b"layout").unwrap();
         write_atomic(&old.join("themes/Dark.toml"), b"theme").unwrap();
-        write_atomic(&new.join("prefs.json"), b"new preferences").unwrap();
+        write_atomic(&new.join("prefs.toml"), b"new preferences").unwrap();
         assert_eq!(migrate_config(&old, &new), new);
-        assert_eq!(read(&new.join("prefs.json")).unwrap(), b"new preferences");
-        assert_eq!(read(&new.join("settings.json")).unwrap(), b"old settings");
-        assert_eq!(read(&new.join("layouts/Desk.json")).unwrap(), b"layout");
+        assert_eq!(read(&new.join("prefs.toml")).unwrap(), b"new preferences");
+        assert_eq!(read(&new.join("settings.toml")).unwrap(), b"old settings");
+        assert_eq!(read(&new.join("layouts/Desk.toml")).unwrap(), b"layout");
         assert_eq!(read(&new.join("themes/Dark.toml")).unwrap(), b"theme");
-        std::fs::remove_file(new.join("layouts/Desk.json")).unwrap();
+        std::fs::remove_file(new.join("layouts/Desk.toml")).unwrap();
         migrate_config(&old, &new);
-        assert!(!new.join("layouts/Desk.json").exists());
-        assert!(old.join("layouts/Desk.json").exists());
+        assert!(!new.join("layouts/Desk.toml").exists());
+        assert!(old.join("layouts/Desk.toml").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -455,7 +476,7 @@ mod tests {
     fn config_migration_falls_back_when_destination_is_unusable() {
         let root = scratch("xdg-failure");
         let old = root.join("data");
-        write_atomic(&old.join("prefs.json"), b"preferences").unwrap();
+        write_atomic(&old.join("prefs.toml"), b"preferences").unwrap();
         let blocked = root.join("blocked");
         std::fs::write(&blocked, b"file").unwrap();
         assert_eq!(migrate_config(&old, &blocked.join("config")), old);
@@ -467,19 +488,19 @@ mod tests {
         let root = scratch("xdg-retry");
         let old = root.join("data");
         let new = root.join("config");
-        write_atomic(&old.join("prefs.json"), b"first").unwrap();
-        write_atomic(&old.join("settings.json"), b"old").unwrap();
+        write_atomic(&old.join("prefs.toml"), b"first").unwrap();
+        write_atomic(&old.join("settings.toml"), b"old").unwrap();
         write_atomic(&old.join("themes/Dark.toml"), b"theme").unwrap();
-        write_atomic(&new.join("settings.json"), b"existing").unwrap();
+        write_atomic(&new.join("settings.toml"), b"existing").unwrap();
         write_atomic(&new.join("themes"), b"blocks directory").unwrap();
         assert_eq!(migrate_config(&old, &new), old);
-        assert!(!new.join("prefs.json").exists());
-        assert_eq!(read(&new.join("settings.json")).unwrap(), b"existing");
-        write_atomic(&old.join("prefs.json"), b"updated").unwrap();
+        assert!(!new.join("prefs.toml").exists());
+        assert_eq!(read(&new.join("settings.toml")).unwrap(), b"existing");
+        write_atomic(&old.join("prefs.toml"), b"updated").unwrap();
         std::fs::remove_file(new.join("themes")).unwrap();
         assert_eq!(migrate_config(&old, &new), new);
-        assert_eq!(read(&new.join("prefs.json")).unwrap(), b"updated");
-        assert_eq!(read(&new.join("settings.json")).unwrap(), b"existing");
+        assert_eq!(read(&new.join("prefs.toml")).unwrap(), b"updated");
+        assert_eq!(read(&new.join("settings.toml")).unwrap(), b"existing");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -491,7 +512,7 @@ mod tests {
         let root = scratch("xdg-lock");
         let old = root.join("data");
         let new = root.join("config");
-        write_atomic(&old.join("prefs.json"), b"preferences").unwrap();
+        write_atomic(&old.join("prefs.toml"), b"preferences").unwrap();
         let lock = imp::migration_lock(&new).unwrap();
         let (tx, rx) = mpsc::channel();
         let old_thread = old.clone();
@@ -505,7 +526,7 @@ mod tests {
         assert!(!new.join(".migrated-from-data").exists());
         drop(lock);
         assert_eq!(worker.join().unwrap(), new);
-        assert_eq!(read(&new.join("prefs.json")).unwrap(), b"preferences");
+        assert_eq!(read(&new.join("prefs.toml")).unwrap(), b"preferences");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -516,11 +537,11 @@ mod tests {
         let root = scratch("xdg-unreadable");
         let old = root.join("data");
         let new = root.join("config");
-        write_atomic(&old.join("prefs.json"), b"old").unwrap();
-        write_atomic(&new.join("prefs.json"), b"new").unwrap();
-        std::fs::set_permissions(old.join("prefs.json"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        write_atomic(&old.join("prefs.toml"), b"old").unwrap();
+        write_atomic(&new.join("prefs.toml"), b"new").unwrap();
+        std::fs::set_permissions(old.join("prefs.toml"), std::fs::Permissions::from_mode(0o000)).unwrap();
         assert_eq!(migrate_config(&old, &new), new);
-        assert_eq!(read(&new.join("prefs.json")).unwrap(), b"new");
+        assert_eq!(read(&new.join("prefs.toml")).unwrap(), b"new");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -528,18 +549,18 @@ mod tests {
     fn migrate_moves_the_old_folder_and_links_it() {
         let root = scratch("move");
         let (old, new) = (root.join("terminal-rs"), root.join("terminal"));
-        write_atomic(&old.join("layouts/Desk.json"), b"{}").unwrap();
+        write_atomic(&old.join("layouts/Desk.toml"), b"{}").unwrap();
         assert_eq!(migrate(&old, &new), new);
-        assert_eq!(read(&new.join("layouts/Desk.json")).unwrap(), b"{}");
+        assert_eq!(read(&new.join("layouts/Desk.toml")).unwrap(), b"{}");
         #[cfg(unix)]
         {
             assert_eq!(std::fs::read_link(&old).unwrap(), Path::new("terminal"), "relative to the link's folder");
-            assert_eq!(read(&old.join("layouts/Desk.json")).unwrap(), b"{}", "old builds still find the files");
+            assert_eq!(read(&old.join("layouts/Desk.toml")).unwrap(), b"{}", "old builds still find the files");
         }
         // Later launches find the new folder and leave everything as it is.
-        write_atomic(&new.join("settings.json"), b"[]").unwrap();
+        write_atomic(&new.join("settings.toml"), b"[]").unwrap();
         assert_eq!(migrate(&old, &new), new);
-        assert_eq!(read(&new.join("settings.json")).unwrap(), b"[]");
+        assert_eq!(read(&new.join("settings.toml")).unwrap(), b"[]");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -547,11 +568,11 @@ mod tests {
     fn migrate_never_replaces_an_existing_folder() {
         let root = scratch("keep");
         let (old, new) = (root.join("terminal-rs"), root.join("terminal"));
-        write_atomic(&old.join("settings.json"), b"old").unwrap();
-        write_atomic(&new.join("settings.json"), b"new").unwrap();
+        write_atomic(&old.join("settings.toml"), b"old").unwrap();
+        write_atomic(&new.join("settings.toml"), b"new").unwrap();
         assert_eq!(migrate(&old, &new), new);
-        assert_eq!(read(&new.join("settings.json")).unwrap(), b"new");
-        assert_eq!(read(&old.join("settings.json")).unwrap(), b"old", "the old folder is left alone");
+        assert_eq!(read(&new.join("settings.toml")).unwrap(), b"new");
+        assert_eq!(read(&old.join("settings.toml")).unwrap(), b"old", "the old folder is left alone");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -570,7 +591,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = scratch("stuck");
         let (old, new) = (root.join("terminal-rs"), root.join("terminal"));
-        write_atomic(&old.join("settings.json"), b"{}").unwrap();
+        write_atomic(&old.join("settings.toml"), b"{}").unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
         if std::fs::create_dir(root.join("probe")).is_ok() {
             // Running as root, where a read-only folder doesn't stop the move.
@@ -581,7 +602,7 @@ mod tests {
         let used = migrate(&old, &new);
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(used, old);
-        assert_eq!(read(&old.join("settings.json")).unwrap(), b"{}");
+        assert_eq!(read(&old.join("settings.toml")).unwrap(), b"{}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -619,20 +640,20 @@ mod tests {
     #[test]
     fn copy_keys_copies_once_without_overwriting() {
         let mut s = Keys::new(&[
-            ("terminal-rs/settings.json", "old settings"),
-            ("terminal-rs/layouts/Desk.json", "desk"),
-            ("terminal/settings.json", "newer settings"),
+            ("terminal-rs/settings.toml", "old settings"),
+            ("terminal-rs/layouts/Desk.toml", "desk"),
+            ("terminal/settings.toml", "newer settings"),
             ("other-site-key", "untouched"),
         ]);
         assert!(copy_keys(&mut s, "terminal-rs", "terminal"));
-        assert_eq!(s.get("terminal/settings.json").as_deref(), Some("newer settings"), "newer data wins");
-        assert_eq!(s.get("terminal/layouts/Desk.json").as_deref(), Some("desk"));
-        assert_eq!(s.get("terminal-rs/layouts/Desk.json").as_deref(), Some("desk"), "the old keys stay");
+        assert_eq!(s.get("terminal/settings.toml").as_deref(), Some("newer settings"), "newer data wins");
+        assert_eq!(s.get("terminal/layouts/Desk.toml").as_deref(), Some("desk"));
+        assert_eq!(s.get("terminal-rs/layouts/Desk.toml").as_deref(), Some("desk"), "the old keys stay");
         assert_eq!(s.get("other-site-key").as_deref(), Some("untouched"));
         // A layout deleted after the copy doesn't come back on the next load.
-        s.remove("terminal/layouts/Desk.json");
+        s.remove("terminal/layouts/Desk.toml");
         assert!(copy_keys(&mut s, "terminal-rs", "terminal"));
-        assert_eq!(s.get("terminal/layouts/Desk.json"), None);
+        assert_eq!(s.get("terminal/layouts/Desk.toml"), None);
     }
 
     #[test]
@@ -648,16 +669,16 @@ mod tests {
 
     #[test]
     fn a_page_left_on_the_old_prefix_follows_another_tabs_copy() {
-        let mut s = Keys::new(&[("terminal-rs/settings.json", "a")]);
+        let mut s = Keys::new(&[("terminal-rs/settings.toml", "a")]);
         s.room = 1;
         // Tab A can't copy, so it keeps the old prefix.
         assert!(!copy_keys(&mut s, "terminal-rs", "terminal"));
         let key = |s: &Keys, k: &str| redirect(s, "terminal-rs", "terminal", k.into());
-        assert_eq!(key(&s, "terminal-rs/settings.json"), "terminal-rs/settings.json");
+        assert_eq!(key(&s, "terminal-rs/settings.toml"), "terminal-rs/settings.toml");
         // Space frees up and tab B finishes the copy; tab A's saves now go where loads read.
         s.room = usize::MAX;
         assert!(copy_keys(&mut s, "terminal-rs", "terminal"));
-        assert_eq!(key(&s, "terminal-rs/settings.json"), "terminal/settings.json");
+        assert_eq!(key(&s, "terminal-rs/settings.toml"), "terminal/settings.toml");
         assert_eq!(key(&s, "terminal-rs/layouts"), "terminal/layouts");
         assert_eq!(key(&s, "terminal-rs"), "terminal");
         assert_eq!(key(&s, "terminal-rsx/a.json"), "terminal-rsx/a.json", "only that prefix");

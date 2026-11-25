@@ -120,9 +120,9 @@ pub struct SecretStore {
 
 impl SecretStore {
     /// The platform store: the Keychain on macOS (unless `TR_SECRET_STORE=file`), otherwise
-    /// `<data_dir>/secrets/snaptrade.json`.
+    /// `<data_dir>/secrets/snaptrade.toml`.
     pub fn platform(data_dir: &Path) -> Self {
-        let file = Backend::File(data_dir.join("secrets").join("snaptrade.json"));
+        let file = Backend::File(data_dir.join("secrets").join("snaptrade.toml"));
         let force_file = std::env::var("TR_SECRET_STORE").is_ok_and(|v| v.eq_ignore_ascii_case("file"));
         let backend = if cfg!(target_os = "macos") && !force_file {
             Backend::Keychain { service: KEYCHAIN_SERVICE.into(), legacy: Some(LEGACY_KEYCHAIN_SERVICE.into()) }
@@ -160,17 +160,21 @@ impl SecretStore {
         };
         match text {
             Some(t) if !t.trim().is_empty() => {
-                Ok(Some(serde_json::from_str(&t).context("SnapTrade credentials are not valid JSON")?))
+                let creds = match &self.backend {
+                    Backend::Keychain { .. } => serde_json::from_str(&t).context("invalid SnapTrade Keychain entry")?,
+                    Backend::File(_) => toml::from_str(&t).context("invalid SnapTrade TOML credentials")?,
+                };
+                Ok(Some(creds))
             }
             _ => Ok(None),
         }
     }
 
     pub fn save(&self, creds: &Credentials) -> Result<()> {
-        let json = serde_json::to_string(&creds.trimmed())?;
+        let creds = creds.trimmed();
         match &self.backend {
-            Backend::Keychain { service, .. } => keychain::set(service, &json),
-            Backend::File(p) => write_private(p, &json),
+            Backend::Keychain { service, .. } => keychain::set(service, &serde_json::to_string(&creds)?),
+            Backend::File(p) => write_private(p, &toml::to_string_pretty(&creds)?),
         }
     }
 
@@ -530,7 +534,7 @@ mod tests {
     #[test]
     fn file_store_round_trip_is_private() {
         let dir = std::env::temp_dir().join(format!("tr-broker-secrets-{}", std::process::id()));
-        let store = SecretStore::file(dir.join("secrets/snaptrade.json"));
+        let store = SecretStore::file(dir.join("secrets/snaptrade.toml"));
         assert_eq!(store.load().unwrap(), None);
         let mut c = creds();
         c.client_id = "  PARTNER-ID ".into();
@@ -539,7 +543,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join("secrets/snaptrade.json")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.join("secrets/snaptrade.toml")).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
             let dmode = std::fs::metadata(dir.join("secrets")).unwrap().permissions().mode();
             assert_eq!(dmode & 0o777, 0o700);

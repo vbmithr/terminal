@@ -1,4 +1,4 @@
-//! User preferences persisted in `prefs.json`: appearance (theme mode, colours, fonts,
+//! User preferences persisted in `prefs.toml`: appearance (theme mode, colours, fonts,
 //! density), the hotkey map and defaults for new panels.
 
 use std::collections::BTreeMap;
@@ -616,7 +616,7 @@ impl Chord {
     }
 }
 
-/// Hotkey bindings; stored as text so the JSON is human-editable.
+/// Hotkey bindings; stored as text so the TOML is human-editable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Keymap(pub BTreeMap<Action, String>);
@@ -741,8 +741,7 @@ impl Default for Prefs {
 
 impl Prefs {
     pub fn load(path: &std::path::Path) -> Prefs {
-        let mut p: Prefs =
-            crate::storage::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut p: Prefs = crate::storage::read_config(path).unwrap_or_default();
         p.migrate();
         p.hotkeys = p.hotkeys.with_defaults();
         p.appearance.font_scale = p.appearance.font_scale.clamp(0.7, 1.6);
@@ -814,7 +813,7 @@ impl Prefs {
     }
 
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-        crate::storage::write_atomic(path, &serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)
+        crate::storage::write_config(path, self)
     }
 }
 
@@ -874,25 +873,25 @@ mod tests {
     }
 
     #[test]
-    fn prefs_json_round_trip_and_partial_files() {
+    fn prefs_toml_round_trip_and_partial_files() {
         let mut p = Prefs::default();
         p.appearance.theme = "Nord".into();
         p.appearance.light_theme = "Solarized Light".into();
         p.appearance.sidebar_side = SidebarSide::Right;
         p.panels.chart_type = ChartType::Line;
         p.hotkeys.bind(Action::Help, Chord::parse("Cmd+Shift+H").unwrap());
-        let json = serde_json::to_string_pretty(&p).unwrap();
-        assert!(json.contains("\"Help\": \"Cmd+Shift+H\"") || json.contains("\"Help\": \"Ctrl+Shift+H\""));
-        let back: Prefs = serde_json::from_str(&json).unwrap();
+        let text = toml::to_string_pretty(&p).unwrap();
+        let back: Prefs = toml::from_str(&text).unwrap();
         assert_eq!(back, p);
-        // Older or hand-written files with only some fields still load.
-        let partial: Prefs = serde_json::from_str(r#"{"appearance":{"theme":"Monokai"}}"#).unwrap();
+        let partial: Prefs = toml::from_str("[appearance]\ntheme = \"Monokai\"").unwrap();
         assert_eq!(partial.appearance.theme, "Monokai");
         assert_eq!(partial.appearance.dark_theme, "Terminal Dark");
         assert_eq!(partial.panels, PanelDefaults::default());
         let dir = std::env::temp_dir().join(format!("tr-prefs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("prefs.json");
+        let path = dir.join("prefs.toml");
+        crate::storage::write_atomic(&path.with_extension("json"), &serde_json::to_vec(&p).unwrap()).unwrap();
+        assert_eq!(Prefs::load(&path), Prefs::default());
         p.save(&path).unwrap();
         assert_eq!(Prefs::load(&path), p);
         std::fs::remove_dir_all(&dir).unwrap();

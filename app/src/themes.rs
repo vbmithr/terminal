@@ -1,5 +1,5 @@
 //! Themes: named bundles of colours, fonts and density. Eight are built in; custom themes
-//! are TOML (or JSON) files in `<config dir>/themes/`, so they can be shared, hand-edited,
+//! are TOML files in `<config dir>/themes/`, so they can be shared, hand-edited,
 //! imported and exported. A file only needs the fields it changes: anything missing is
 //! filled from the built-in dark or light base, chosen by its `dark` flag.
 
@@ -164,25 +164,13 @@ impl Theme {
         toml::to_string_pretty(self).expect("theme serializes")
     }
 
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).expect("theme serializes")
-    }
-
     /// Parse a theme file, filling fields it omits from the matching built-in base.
-    pub fn parse(text: &str, json: bool) -> Result<Theme> {
-        let user: serde_json::Value = if json {
-            serde_json::from_str(text).context("parsing theme JSON")?
-        } else {
-            let t: toml::Value = toml::from_str(text).context("parsing theme TOML")?;
-            serde_json::to_value(t)?
-        };
-        if !user.is_object() {
-            bail!("a theme file must be a table/object");
-        }
+    pub fn parse(text: &str) -> Result<Theme> {
+        let user: toml::Value = toml::from_str(text).context("parsing theme TOML")?;
         let dark = user.get("dark").and_then(|v| v.as_bool()).unwrap_or(true);
-        let mut merged = serde_json::to_value(if dark { terminal_dark() } else { terminal_light() })?;
+        let mut merged = toml::Value::try_from(if dark { terminal_dark() } else { terminal_light() })?;
         merge(&mut merged, user);
-        let mut t: Theme = serde_json::from_value(merged).context("invalid theme")?;
+        let mut t: Theme = merged.try_into().context("invalid theme")?;
         t.builtin = false;
         t.source = None;
         t.sanitize();
@@ -190,10 +178,10 @@ impl Theme {
     }
 }
 
-/// Deep-merge `over` into `base` (objects merge key by key; anything else replaces).
-fn merge(base: &mut serde_json::Value, over: serde_json::Value) {
+/// Deep-merge `over` into `base` (tables merge key by key; anything else replaces).
+fn merge(base: &mut toml::Value, over: toml::Value) {
     match (base, over) {
-        (serde_json::Value::Object(b), serde_json::Value::Object(o)) => {
+        (toml::Value::Table(b), toml::Value::Table(o)) => {
             for (k, v) in o {
                 match b.get_mut(&k) {
                     Some(slot) => merge(slot, v),
@@ -562,10 +550,8 @@ impl ThemeStore {
     /// built-in or earlier name is listed with a suffix rather than shadowing it.
     pub fn load_all(&self) -> Vec<Theme> {
         let mut out = builtins();
-        let mut files: Vec<PathBuf> = storage::list(&self.dir)
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|x| x == "toml" || x == "json"))
-            .collect();
+        let mut files: Vec<PathBuf> =
+            storage::list(&self.dir).into_iter().filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
         files.sort();
         let mut custom: Vec<Theme> = Vec::new();
         for p in files {
@@ -621,16 +607,14 @@ impl ThemeStore {
         Ok(storage::remove(&path)?)
     }
 
-    /// Write a theme to `to` as JSON (`.json`) or TOML (anything else); a download in the
-    /// browser. Returns where it went.
+    /// Export a TOML theme. Returns where it went.
     pub fn export(theme: &Theme, to: &Path) -> Result<String> {
-        let json = to.extension().is_some_and(|x| x.eq_ignore_ascii_case("json"));
-        let text = if json { theme.to_json() } else { theme.to_toml() };
-        storage::export(to, text.as_bytes()).with_context(|| format!("writing {}", to.display()))
+        let to = to.with_extension("toml");
+        storage::export(&to, theme.to_toml().as_bytes()).with_context(|| format!("writing {}", to.display()))
     }
 }
 
-/// Read a TOML or JSON theme file from the themes folder.
+/// Read a TOML theme file from the themes folder.
 pub fn load_file(path: &Path) -> Result<Theme> {
     parse_file(path, storage::read(path).with_context(|| format!("reading {}", path.display()))?)
 }
@@ -642,8 +626,7 @@ pub fn import_file(path: &Path) -> Result<Theme> {
 
 fn parse_file(path: &Path, bytes: Vec<u8>) -> Result<Theme> {
     let text = String::from_utf8(bytes).with_context(|| format!("{} is not UTF-8 text", path.display()))?;
-    let json = path.extension().is_some_and(|x| x.eq_ignore_ascii_case("json"));
-    let mut t = Theme::parse(&text, json)?;
+    let mut t = Theme::parse(&text)?;
     t.source = Some(path.to_path_buf());
     if t.name == "Untitled Theme" {
         t.name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
@@ -718,12 +701,10 @@ mod tests {
     }
 
     #[test]
-    fn every_builtin_round_trips_through_toml_and_json() {
+    fn every_builtin_round_trips_through_toml() {
         for t in builtins() {
-            let from_toml = Theme::parse(&t.to_toml(), false).unwrap();
+            let from_toml = Theme::parse(&t.to_toml()).unwrap();
             assert_eq!(from_toml, Theme { builtin: false, ..t.clone() }, "{} toml", t.name);
-            let from_json = Theme::parse(&t.to_json(), true).unwrap();
-            assert_eq!(from_json, from_toml, "{} json", t.name);
         }
         let toml = terminal_dark().to_toml();
         assert!(toml.contains("[colors]") && toml.contains("background = \"#1e1e20\""), "{toml}");
@@ -731,17 +712,16 @@ mod tests {
 
     #[test]
     fn partial_files_inherit_from_their_base() {
-        let t = Theme::parse("name = \"Mint\"\ndark = false\n[colors]\nup = \"#00aa66\"\n", false).unwrap();
+        let t = Theme::parse("name = \"Mint\"\ndark = false\n[colors]\nup = \"#00aa66\"\n").unwrap();
         assert_eq!(t.colors.up, Hex::rgb(0, 0xaa, 0x66));
         assert_eq!(t.colors.panel, terminal_light().colors.panel, "light base");
         assert_eq!(t.density, Density::Regular);
-        let j = Theme::parse(r#"{"name":"Night","fonts":{"scale":9.0},"density":"Compact"}"#, true).unwrap();
+        let j = Theme::parse("name = \"Night\"\ndensity = \"Compact\"\n[fonts]\nscale = 9.0").unwrap();
         assert_eq!(j.colors.panel, terminal_dark().colors.panel, "dark base by default");
         assert_eq!(j.fonts.scale, 1.6, "clamped");
         assert_eq!(j.density, Density::Compact);
-        assert!(Theme::parse("[colors]\nup = \"green\"", false).is_err(), "bad colour is an error");
-        assert!(Theme::parse("[1, 2]", true).is_err());
-        assert!(Theme::parse("not = [toml", false).is_err());
+        assert!(Theme::parse("[colors]\nup = \"green\"").is_err(), "bad colour is an error");
+        assert!(Theme::parse("not = [toml").is_err());
     }
 
     #[test]
@@ -754,8 +734,14 @@ mod tests {
         mine.colors.up = Hex::rgb(1, 2, 3);
         store.save(&mine).unwrap();
         assert!(store.save(&nord()).is_err(), "built-ins are read-only");
-        // A hand-dropped JSON file reusing a built-in name gets a suffix.
-        std::fs::write(dir.join("x.json"), r##"{"name":"Nord","colors":{"down":"#ff00ff"}}"##).unwrap();
+        // A hand-dropped TOML file reusing a built-in name gets a suffix.
+        std::fs::write(
+            dir.join("x.toml"),
+            r##"name = "Nord"
+[colors]
+down = "#ff00ff""##,
+        )
+        .unwrap();
         let all = store.load_all();
         assert_eq!(all.len(), 10);
         assert_eq!(find(&all, "Desk").unwrap().colors.up, Hex::rgb(1, 2, 3));
@@ -764,12 +750,10 @@ mod tests {
         assert!(!copy.builtin);
         assert_eq!(unique_name(&all, "Desk"), "Desk 2");
         assert_eq!(unique_name(&all, "System"), "System 2");
-        // Export as JSON and TOML, then import back.
-        for ext in ["json", "toml"] {
-            let out = dir.join(format!("export/desk.{ext}"));
-            ThemeStore::export(&mine, &out).unwrap();
-            assert_eq!(load_file(&out).unwrap().colors, mine.colors, "{ext}");
-        }
+        // Export as TOML, then import back.
+        let out = dir.join("export/desk.toml");
+        ThemeStore::export(&mine, &out).unwrap();
+        assert_eq!(load_file(&out).unwrap().colors, mine.colors);
         let all = store.load_all();
         // Saving an edited theme goes back to its own file.
         let mut desk = find(&all, "desk").unwrap().clone();

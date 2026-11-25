@@ -206,7 +206,7 @@ fn close_position_sells_everything_available() {
 #[test]
 fn persists_and_resets() {
     let dir = std::env::temp_dir().join(format!("tr-demo-test-{}", std::process::id()));
-    let path = dir.join("demo.json");
+    let path = dir.join("demo.toml");
     let _ = std::fs::remove_dir_all(&dir);
     let fresh = DemoBook::load(&path, t0()).unwrap();
     assert_eq!(fresh.cash, STARTING_CASH, "a missing file is a new account");

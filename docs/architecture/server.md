@@ -69,8 +69,8 @@ How facts are marked:
 | Bar cache | SQLite `BarCache` (desktop only). | `crates/data/src/cache.rs` |
 | Congress | Senate eFD and House Clerk ingest into SQLite, refreshed every 30 minutes (`CONGRESS_REFRESH_MIN`). The web build gets an empty stub. | `crates/congress/` |
 | Brokerage | SnapTrade, read-only. The partner keys and the per-user secret live in the Keychain or a 0600 file. | `crates/broker/src/snaptrade.rs`, `secrets.rs` |
-| Demo | `DemoBook` starts with $100k (`STARTING_CASH`) and is saved as local JSON. Orders fill at the terminal's live quote. | `crates/broker/src/demo.rs` |
-| User docs | Layouts (`LayoutDoc` JSON, which holds the panes, their drawings and the watchlist panes), prefs, themes and palette history. They are files on the desktop and `localStorage` in the browser. | `app/src/storage.rs`, `layouts.rs`, `prefs.rs` |
+| Demo | `DemoBook` starts with $100k (`STARTING_CASH`) and is saved as local TOML. Orders fill at the terminal's live quote. | `crates/broker/src/demo.rs` |
+| User docs | Layouts (`LayoutDoc` TOML, which holds the panes, their drawings and the watchlist panes), prefs, themes and palette history. They are files on the desktop and `localStorage` in the browser. | `app/src/storage.rs`, `layouts.rs`, `prefs.rs` |
 
 The plan keeps `MarketData` as the *client-side* trait. A new `RemoteMarkets` implementation forwards each call to the server (§4.6), so the panes, the worker and the chart code don't change. On the server, a new, richer `Provider` trait (§3.1) sits behind the ingest adapters.
 
@@ -565,10 +565,10 @@ Each file in `storage.rs` becomes a server document `(user_id, kind, name)` with
 
 | Kind | Today | Server model | Conflict rule |
 |---|---|---|---|
-| Layouts | `LayoutDoc` JSON | Whole-document, optimistic concurrency (`base_rev`) | If `base_rev` doesn't match, the server keeps both and saves the losing write as "Name (conflict, Device, time)". This mirrors how people expect files to behave and never loses work. |
+| Layouts | `LayoutDoc` TOML | Whole-document, optimistic concurrency (`base_rev`) | If `base_rev` doesn't match, the server keeps both and saves the losing write as "Name (conflict, Device, time)". This mirrors how people expect files to behave and never loses work. |
 | Watchlists | Watchlist panes or prefs | Ordered set of items with stable ids | Per-item ops (`Add`, `Remove`, `Move{after}`), last-writer-wins per item, with tombstones. Concurrent adds from two devices both survive. |
 | Drawings | `Vec<Drawing>` inside chart panes | Stored separately per `(user, market_key)`, each drawing with a **new stable `id`** (the `Drawing` struct needs one) | Last-writer-wins per drawing (`rev` and `updated_at`). Delete wins over a concurrent edit. Drawings follow the symbol across layouts. |
-| Prefs, themes, hotkeys, palette history | TOML/JSON files | Key-level merge | Last-writer-wins per key |
+| Prefs, themes, hotkeys, palette history | TOML files | Key-level merge | Last-writer-wins per key |
 | Demo portfolio | `DemoBook` JSON | **Server-authoritative.** Clients send commands, and the server fills against its own hot quotes and broadcasts the book. | No merge needed: one writer. Paper only; it never routes to a venue. |
 
 Offline behaviour: clients keep today's local files as a cache and an outbox. Each queued `DocOp` carries an `op_id` (a UUID generated once, when the edit is made, and persisted with the outbox entry). The server records `(user_id, op_id) → result (rev or conflict outcome)` **in the same transaction as the write**, and keeps it for at least 30 days [target]. On reconnect, clients replay queued `DocOp`s with their original `op_id` and `base_rev`. If the server has already applied that `op_id`, it returns the original `DocAck` or `DocConflict` instead of re-evaluating `base_rev`. So a lost acknowledgement never creates a spurious conflict copy. Genuine conflicts resolve as above. The first sign-in uploads the local documents. If the server already has documents, the user chooses "merge" or "keep server".
